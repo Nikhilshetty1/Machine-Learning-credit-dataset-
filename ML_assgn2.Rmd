@@ -1,0 +1,212 @@
+---
+title: "MLassign2"
+author: "Nikhil Shetty"
+date: "May 24, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(naniar)
+library(knitr)
+library(rpart)
+library(caret)
+library(BBmisc)
+library(clusterSim)
+library(randomForest)
+library(adabag)
+library(class)
+library(e1071)
+library(dplyr)
+credit=read.csv("C:/Users/Administrator/Desktop/Datasets/ML datasets/credit-default.csv")
+data_new=credit
+```
+
+# EDA analysis - To find if there are any NA values
+```{r}
+colSums(is.na(credit))
+```
+
+# Converting into factor columns
+```{r}
+credit$installment_rate = as.factor(credit$installment_rate)
+credit$residence_history = as.factor(credit$residence_history)
+credit$existing_credits = as.factor(credit$existing_credits)
+credit$default = as.factor(credit$default)
+credit$dependents = as.factor(credit$dependents)
+```
+
+# Training and test data
+```{r}
+set.seed(100)
+credit_training = credit[sample(1:nrow(credit), 0.7*nrow(credit)),]
+credit_testing = credit[sample(1:nrow(credit), 0.3*nrow(credit)),]
+
+dim(credit_training)
+dim(credit_testing)
+```
+
+# Decision trees
+```{r}
+set.seed(100)
+credit$default = as.factor(credit$default)
+model = rpart(default~., data=credit_training)
+result = as.data.frame(predict(model, credit_testing))
+result$target = ifelse(result$`1`>0.5, 1, 2) %>% as.factor()
+cf = confusionMatrix(result$target, credit_testing$default,positive = "2")
+percent = cf$overall['Accuracy']*100
+sensitivity = cf$byClass['Sensitivity']*100
+precision = cf$byClass[5]*100
+accuracy = data.frame(Model = 'Decision Tree', Accuracy_percent = percent, Sensitivity_percent=sensitivity,
+                      Precision_percent=precision, stringsAsFactors = F, row.names = 1)
+
+```
+
+# Random forest
+```{r}
+set.seed(100)
+model = randomForest(default~., data=credit_training)
+result = predict(model, credit_testing)
+cf = confusionMatrix(result, credit_testing$default,positive = "2")
+percent = cf$overall['Accuracy']*100
+sensitivity = cf$byClass['Sensitivity']*100
+precision = cf$byClass[5]*100
+accuracy = rbind(accuracy, c('Random forest',percent,sensitivity,precision))
+
+```
+
+# Ada boost
+```{r}
+set.seed(100)
+model = boosting(default~., credit_training)
+result = predict(model, credit_testing)
+cf = confusionMatrix(as.factor(result$class), credit_testing$default,positive = "2")
+percent = cf$overall['Accuracy']*100
+sensitivity = cf$byClass['Sensitivity']*100
+precision = cf$byClass[5]*100
+accuracy = rbind(accuracy, c('Ada boost',percent,sensitivity,precision))
+
+```
+
+
+# KNN, Here we need to send all columns as they are in the credit default dataset without converting them into factors as dummyVars convert them in different levels. 
+```{r}
+set.seed(100)
+dummy.obj=dummyVars(~.,data = data_new)
+credit_new=data.frame(predict(dummy.obj,newdata=data_new))
+#credit_new$
+credit1 = credit_new %>% select(-default)
+credit_norm=normalize(credit1,method = 'range',range = c(0,1))
+credit_norm$default=as.factor(credit$default)
+credit_train<-credit_norm[sample(seq(1,nrow(credit_norm)),0.7*nrow(credit_norm)),]
+credit_test<-credit_norm[sample(seq(1,nrow(credit_norm)),0.3*nrow(credit_norm)),]
+
+credit_test$predict=knn(credit_train,
+                        credit_test,
+                        cl=as.factor(credit_train$default),
+                        k=round(sqrt(length(credit_test))))
+
+credit_test$default=as.factor(credit_test$default)
+credit_test$predict=as.factor(credit_test$predict)
+cf=confusionMatrix(credit_test$predict,credit_test$default,positive = '2')
+percent = cf$overall['Accuracy']*100
+sensitivity = cf$byClass['Sensitivity']*100
+precision = cf$byClass[5]*100
+accuracy = rbind(accuracy, c('KNN',percent,sensitivity,precision))
+```
+
+
+# Naive Bayes
+```{r}
+category <- names(which(sapply(credit, is.factor)))
+credit11 <- credit[,category]
+credit$default = as.factor(credit$default)
+set.seed(100)
+credit_training = credit11[sample(1:nrow(credit11), 0.7*nrow(credit11)),]
+credit_testing = credit11[sample(1:nrow(credit11), 0.3*nrow(credit11)),]
+
+model = naiveBayes(default~., credit_training)
+pred = as.data.frame(predict(model, credit_testing, type = 'raw'))
+pred$target = ifelse(pred$`1` > 0.5, 1, 2) %>% as.factor()
+cf = confusionMatrix(pred$target, credit_testing$default)
+percent = cf$overall['Accuracy']*100
+sensitivity = cf$byClass['Sensitivity']*100
+precision = cf$byClass[5]*100
+accuracy = rbind(accuracy, c('Naive Bayes',percent,sensitivity,precision))
+```
+
+
+# Accuracy percent, Sensitivity percent and precision percent of all the models
+```{r}
+accuracy
+```
+
+
+# We can use the following functions as a part of Feature selection to improve the accuracy, sensitivity and precision of the above models.
+# For two different categorical columns we perform chisquare test to get the number of columns.
+# crosstab analysis(2 categorical columns)
+```{r}
+crosstab_analysis <- function(df){
+  category <- names(which(sapply(df, is.factor)))
+  name_comb <- combn(category,2,simplify = F)
+  result <- c()
+  var1 <- c()
+  var2 <- c()
+  for(col in name_comb){
+    if(nlevels(df[,col[1]]) >=2 & nlevels(df[,col[2]]) >=2){
+      val <- chisq.test(df[,col[1]],df[,col[2]])
+        if(val$p.value < 0.05){
+          result <- append(result,val$p.value)
+          var1 <- append(var1,col[1])
+          var2 <- append(var2,col[2])
+        }
+    }
+  }
+  return(data.frame(variable1=var1,variable2=var2,Pvalue=result))
+}
+kable(crosstab_analysis(credit)) 
+```
+
+# For feature selected columns we use following function to get the annova and t-test
+# Segmented analysis(1 numerical, 1 categorical)
+```{r}
+segmented <- function(x){
+  cat <- names(x)[sapply(x, is.factor)]
+  num <- names(x)[sapply(x, is.numeric)]
+  combntn <- combn(c(num,cat),2,simplify = F)
+  a <- c()
+  b <- c()
+  c <- c()
+  d <- c()
+  annova <- c()
+  t_test <- c()
+  i <- 1
+  j <- 1
+  for (col in combntn){
+    if(col[1] %in% cat & col[2] %in% cat){
+      next()
+    }
+    else if(col[1] %in% num & col[2] %in% num){
+        next()
+    }
+    else if(length(unique(x[,col[2]]))>2){
+             aov_summary <- aov(x[,col[1]]~x[,col[2]])
+             a[i] <- col[1]
+             b[i] <- col[2]
+             annova[i] <- summary(aov_summary)[[1]][1,"Pr(>F)"]
+             i <- i+1
+    }
+    else if(length(unique(x[,col[2]]))==2 & sd(x[,col[1]])!=0){
+            t_test[j] <- t.test(x[,col[1]]~x[,col[2]])$p.value
+            c[j] <- col[1]
+            d[j] <- col[2]
+            j <- j+1
+    }
+  }
+  print(df_aov <- data.frame(a,b,annova))
+  print(df_t <- data.frame(c,d,t_test))
+}
+
+
+segmented(credit)
+```
